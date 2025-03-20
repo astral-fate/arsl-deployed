@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>ArSL Recognition</title>
+    <style>
+        body { 
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f0f0f0;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .main-content {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+        .camera-section, .prediction-section {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        #videoElement {
+            width: 100%;
+            border-radius: 5px;
+            margin-bottom: 10px;
+        }
+        .live-box {
+            border: 2px solid #4CAF50;
+            padding: 20px;
+            border-radius: 5px;
+            min-height: 300px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            background-color: #f9f9f9;
+        }
+        .prediction-label {
+            font-size: 24px;
+            margin-bottom: 10px;
+            color: #333;
+        }
+        .confidence-label {
+            font-size: 18px;
+            color: #666;
+        }
+        .button-group {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            margin-top: 10px;
+        }
+        .button {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 5px;
+            background-color: #4CAF50;
+            color: white;
+            cursor: pointer;
+            font-size: 16px;
+            transition: background-color 0.3s;
+        }
+        .button:hover {
+            background-color: #45a049;
+        }
+        .button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        .image-upload {
+            margin-top: 20px;
+            padding: 20px;
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        .image-section {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-top: 20px;
+        }
+        .upload-section, .upload-prediction-section {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        #imagePreview {
+            width: 100%;
+            max-height: 300px;
+            object-fit: contain;
+            border-radius: 5px;
+            margin: 10px 0;
+            display: none;
+        }
+        .upload-controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            margin-top: 10px;
+        }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Arabic Sign Language Recognition</h1>
+        </div>
+        
+        <div class="main-content">
+            <!-- Camera Feed Section -->
+            <div class="camera-section">
+                <h2>Camera Feed</h2>
+                <video id="video" width="640" height="480" autoplay></video>
+                <div class="button-group">
+                    <button class="button" id="startCamera">Start Camera</button>
+                    <button class="button" id="stopCamera" disabled>Stop Camera</button>
+                </div>
+            </div>
+
+            <!-- Live Prediction Section -->
+            <div class="prediction-section">
+                <h2>Live Prediction</h2>
+                <div class="live-box">
+                    <div class="prediction-label" id="predictionText">Waiting for input...</div>
+                    <div class="confidence-label" id="confidenceText"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Image Upload Section with Preview -->
+        <div class="image-section">
+            <div class="upload-section">
+                <h2>Image Upload</h2>
+                <img id="imagePreview" alt="Preview">
+                <div class="upload-controls">
+                    <input type="file" id="imageInput" accept="image/*" onchange="previewImage(event)">
+                    <button class="button" onclick="predictImage()">Predict</button>
+                </div>
+            </div>
+
+            
+            <div class="upload-prediction-section">
+                <h2>Image Prediction</h2>
+                <div class="live-box">
+                    <div class="prediction-label" id="uploadPredictionText">Upload an image...</div>
+                    <div class="confidence-label" id="uploadConfidenceText"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Initialize all global variables first
+        const video = document.getElementById('video');
+        const startButton = document.getElementById('startCamera');
+        const stopButton = document.getElementById('stopCamera');
+        const predictionDiv = document.getElementById('predictionText');
+        const predictionInterval = 500;
+        let lastPredictionTime = 0;
+        let videoStream = null;
+        let socket = null;
+        let isProcessingFrames = false;
+
+        // Socket initialization
+        function initializeSocket() {
+            if (!socket) {
+                socket = io();
+                socket.on('connect', () => {
+                    console.log('Connected to server');
+                });
+
+                socket.on('prediction_result', (data) => {
+                    updatePrediction(data.class, data.confidence);
+                });
+
+                socket.on('prediction_error', (data) => {
+                    console.error('Prediction error:', data.error);
+                    predictionDiv.textContent = 'Error: ' + data.error;
+                });
+            }
+        }
+
+        // Frame processing function
+        function processFrame() {
+            if (!isProcessingFrames) return;
+
+            const now = Date.now();
+            if (now - lastPredictionTime >= predictionInterval && socket) {
+                const canvas = document.createElement('canvas');
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(video, 0, 0);
+                const imageData = canvas.toDataURL('image/jpeg');
+                socket.emit('camera_frame', { image: imageData });
+                lastPredictionTime = now;
+            }
+            requestAnimationFrame(processFrame);
+        }
+
+        // Camera initialization
+        async function startCamera() {
+            try {
+                if (!socket) {
+                    initializeSocket();
+                }
+                
+                videoStream = await navigator.mediaDevices.getUserMedia({ video: true });
+                video.srcObject = videoStream;
+                startButton.disabled = true;
+                stopButton.disabled = false;
+                isProcessingFrames = true;
+                processFrame();
+            } catch (err) {
+                console.error('Error accessing camera:', err);
+                predictionDiv.textContent = 'Error accessing camera: ' + err.message;
+            }
+        }
+
+        // Camera shutdown
+        function stopCamera() {
+            isProcessingFrames = false;
+            if (videoStream) {
+                videoStream.getTracks().forEach(track => track.stop());
+                video.srcObject = null;
+            }
+            startButton.disabled = false;
+            stopButton.disabled = true;
+        }
+
+        // Initialize event listeners
+        document.addEventListener('DOMContentLoaded', () => {
+            initializeSocket();
+            startButton.addEventListener('click', startCamera);
+            stopButton.addEventListener('click', stopCamera);
+        });
+
+        // Predict from uploaded image
+        async function predictImage() {
+            const input = document.getElementById('imageInput');
+            if (!input.files || !input.files[0]) {
+                alert('Please select an image first');
+                return;
+            }
+            const formData = new FormData();
+            formData.append('image', input.files[0]);
+            
+            try {
+                const response = await fetch('/predict', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const data = await response.json();
+                if (data.error) {
+                    updateUploadPrediction('Error: ' + data.error, 0);
+                } else {
+                    updateUploadPrediction(data.class, data.confidence);
+                }
+            } catch (error) {
+                updateUploadPrediction('Error: ' + error.message, 0);
+            }
+        }
+
+        // Update the prediction display
+        function updatePrediction(prediction, confidence) {
+            const predictionText = document.getElementById('predictionText');
+            const confidenceText = document.getElementById('confidenceText');
+            
+            predictionText.textContent = `Prediction: ${prediction}`;
+            confidenceText.textContent = `Confidence: ${confidence.toFixed(2)}%`;
+        }
+
+        // Preview uploaded image
+        function previewImage(event) {
+            const preview = document.getElementById('imagePreview');
+            const file = event.target.files[0];
+            
+            if (file) {
+                preview.src = URL.createObjectURL(file);
+                preview.style.display = 'block';
+                // Reset prediction
+                updateUploadPrediction('Ready to predict', 0);
+            }
+        }
+
+        // Update the upload prediction display
+        function updateUploadPrediction(prediction, confidence) {
+            const predictionText = document.getElementById('uploadPredictionText');
+            const confidenceText = document.getElementById('uploadConfidenceText');
+            
+            predictionText.textContent = `Prediction: ${prediction}`;
+            if (confidence > 0) {
+                confidenceText.textContent = `Confidence: ${confidence.toFixed(2)}%`;
+            } else {
+                confidenceText.textContent = '';
+            }
+        }
+    </script>
+</body>
+</html>
